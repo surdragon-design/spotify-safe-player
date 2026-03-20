@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  spotify-safe-play <spotify-uri-or-url-or-id> [spogo flags...]
+
+Behavior:
+  - Tracks: queue the track, then skip to next.
+  - Albums / playlists: queue tracks in normal order, skip once into the
+    first track, then exit immediately.
+  - Shows / episodes: fall back to `spogo play`.
+
+Examples:
+  spotify-safe-play spotify:track:7qiZfU4dY1lWllzX7mPBI3
+  spotify-safe-play spotify:playlist:37i9dQZF1DXcBWIGoYBM5M --device "Web Player (Chrome)"
+  spotify-safe-play 7qiZfU4dY1lWllzX7mPBI3 --type track
+EOF
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 1
+fi
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+if ! command -v spogo >/dev/null 2>&1; then
+  echo "spotify-safe-play: spogo is not installed or not on PATH" >&2
+  exit 127
+fi
+
+item="$1"
+shift
+dry_run=0
+extra_args=()
+global_args=()
+play_args=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    *)
+      extra_args+=("$1")
+      global_args+=("$1")
+      play_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+normalize_type_from_item() {
+  local value="$1"
+
+  case "$value" in
+    spotify:track:*|https://open.spotify.com/track/*|http://open.spotify.com/track/*)
+      echo "track"
+      return
+      ;;
+    spotify:album:*|https://open.spotify.com/album/*|http://open.spotify.com/album/*)
+      echo "album"
+      return
+      ;;
+    spotify:playlist:*|https://open.spotify.com/playlist/*|http://open.spotify.com/playlist/*)
+      echo "playlist"
+      return
+      ;;
+    spotify:show:*|https://open.spotify.com/show/*|http://open.spotify.com/show/*)
+      echo "show"
+      return
+      ;;
+    spotify:episode:*|https://open.spotify.com/episode/*|http://open.spotify.com/episode/*)
+      echo "episode"
+      return
+      ;;
+  esac
+
+  echo ""
+}
+
+normalize_type_from_flags() {
+  local previous=""
+  local arg=""
+
+  for arg in "${extra_args[@]}"; do
+    if [[ "$previous" == "--type" ]]; then
+      echo "$arg"
+      return
+    fi
+
+    case "$arg" in
+      --type=*)
+        echo "${arg#--type=}"
+        return
+        ;;
+    esac
+
+    previous="$arg"
+  done
+
+  echo ""
+}
+
+item_type="$(normalize_type_from_item "$item")"
+flag_type="$(normalize_type_from_flags)"
+
+if [[ -z "$item_type" && -n "$flag_type" ]]; then
+  item_type="$flag_type"
+fi
+
+if [[ -z "$item_type" ]]; then
+  item_type="track"
+fi
+
+extract_id_from_item() {
+  local value="$1"
+
+  case "$value" in
+    spotify:*:*)
+      echo "${value##*:}"
+      return
+      ;;
+    https://open.spotify.com/*|http://open.spotify.com/*)
+      value="${value%%\?*}"
+      echo "${value##*/}"
+      return
+      ;;
+    *)
+      echo "$value"
+      return
+      ;;
+  esac
+}
+
+fetch_track_uris_from_page() {
+  local kind="$1"
+  local item_id="$2"
+  local url="https://open.spotify.com/${kind}/${item_id}"
+
+  curl -fsSL "$url" \
+    | grep -oE 'spotify:track:[A-Za-z0-9]+' \
+    | awk '!seen[$0]++'
+}
+
+queue_track_and_skip_to_it() {
+  local track_uri="$1"
+
+  if [[ "$dry_run" -eq 1 ]]; then
+    printf 'spogo queue add %q' "$track_uri"
+    printf ' %q' "${global_args[@]}"
+    printf '\n'
+    printf 'spogo next'
+    printf ' %q' "${global_args[@]}"
+    printf '\n'
+    return
+  fi
+
+  spogo queue add "$track_uri" "${global_args[@]}"
+  spogo next "${global_args[@]}"
+}
+
+queue_context_and_skip_to_first() {
+  local context_type="$1"
+  local item_id="$2"
+  local -a tracks=()
+  local total=0
+  local track_uri=""
+
+  while IFS= read -r track_uri; do
+    [[ -n "$track_uri" ]] || continue
+    tracks+=("$track_uri")
+  done < <(fetch_track_uris_from_page "$context_type" "$item_id")
+
+  total="${#tracks[@]}"
+  if [[ "$total" -eq 0 ]]; then
+    echo "spotify-safe-play: failed to extract any tracks from ${context_type} page" >&2
+    exit 3
+  fi
+
+  if [[ "$dry_run" -eq 1 ]]; then
+    echo "spotify-safe-play: would expand ${context_type} page, queue tracks in normal order, then skip once" >&2
+    echo "fetch: https://open.spotify.com/${context_type}/${item_id}"
+    echo "spogo queue add <track 1> ... <track N> ${global_args[*]}"
+    echo "spogo next ${global_args[*]}"
+    return
+  fi
+
+  for track_uri in "${tracks[@]}"; do
+    spogo queue add "$track_uri" "${global_args[@]}" >/dev/null
+  done
+
+  echo "spotify-safe-play: queued ${total} track(s) from ${context_type} in play order, skipping once into the first track" >&2
+  spogo next "${global_args[@]}"
+  exit 0
+}
+
+if [[ "$item_type" == "track" ]]; then
+  echo "spotify-safe-play: queueing track, then skipping to it" >&2
+  queue_track_and_skip_to_it "$item"
+elif [[ "$item_type" == "album" || "$item_type" == "playlist" ]]; then
+  echo "spotify-safe-play: expanding $item_type into tracks and rebuilding playback via the queue" >&2
+  queue_context_and_skip_to_first "$item_type" "$(extract_id_from_item "$item")"
+else
+  echo "spotify-safe-play: using spogo play for $item_type" >&2
+  if [[ "$dry_run" -eq 1 ]]; then
+    printf 'spogo play %q' "$item"
+    printf ' %q' "${play_args[@]}"
+    printf '\n'
+    exit 0
+  fi
+  spogo play "$item" "${play_args[@]}"
+fi

@@ -1,0 +1,4 @@
+* text=auto
+*.sh text eol=lf
+bin/spotify-safe-play text eol=lf
+*.md text eol=lf
