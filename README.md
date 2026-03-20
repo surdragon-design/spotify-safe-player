@@ -21,6 +21,7 @@ The queue-based workaround turned out to be much more reliable for music playbac
 ## Repository layout
 
 - [`bin/spotify-safe-play`](./bin/spotify-safe-play): the wrapper script
+- [`skills/spotify-safe-play`](./skills/spotify-safe-play): the ClawHub-ready skill package
 - [`examples/openclaw/skills/spotify-player/SKILL.md`](./examples/openclaw/skills/spotify-player/SKILL.md): a user-skill override example for OpenClaw
 - [`docs/upstream-notes.md`](./docs/upstream-notes.md): concise notes for upstream OpenClaw / `spogo` discussions
 
@@ -69,6 +70,17 @@ Do not fall back to raw `spotify_player` CLI commands on affected WSL setups.
 ```
 
 A drop-in user-skill example is included under [`examples/openclaw`](./examples/openclaw).
+
+## ClawHub
+
+This repository also includes a publishable skill directory at [`skills/spotify-safe-play`](./skills/spotify-safe-play).
+
+Typical publish flow:
+
+```bash
+clawhub login
+clawhub publish ./skills/spotify-safe-play --slug spotify-safe-play --name "Spotify Safe Play" --version 0.1.0
+```
 
 ## Known limitations
 
